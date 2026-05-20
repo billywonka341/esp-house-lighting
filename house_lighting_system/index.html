@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>House Lights Controller</title>
+  <style>
+    :root {
+      --bg: #080b12;
+      --card-bg: #0f1623;
+      --border: #1e2d45;
+      --amber: #f5a623;
+      --amber-dim: #7a4e08;
+      --green: #22c55e;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --text-dim: #475569;
+      --red: #ef4444;
+      --transition: 0.35s ease;
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding-bottom: 80px; /* Space for fixed bottom nav */
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left {
+      display: flex;
+      flex-direction: column;
+    }
+    .header-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+    .header-info {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: monospace;
+      margin-top: 2px;
+    }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background-color: var(--red);
+      box-shadow: 0 0 8px var(--red);
+      transition: var(--transition);
+    }
+    .status-dot.online {
+      background-color: var(--green);
+      box-shadow: 0 0 8px var(--green);
+    }
+    .current-time {
+      font-size: 1.1rem;
+      font-weight: 600;
+      font-family: monospace;
+      background: rgba(255,255,255,0.03);
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .grace-banner {
+      background-color: rgba(245, 166, 35, 0.15);
+      border: 1px solid var(--amber);
+      color: var(--amber);
+      padding: 12px;
+      text-align: center;
+      font-size: 0.9rem;
+      font-weight: 500;
+      margin: 15px 20px 0 20px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      animation: pulse 2s infinite ease-in-out;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.8; }
+      50% { opacity: 1; }
+      100% { opacity: 0.8; }
+    }
+    .container {
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 20px;
+      flex-grow: 1;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    /* ── Tab Bar ── */
+    .tab-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: var(--card-bg);
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-around;
+      padding: 10px 0;
+      z-index: 1000;
+      backdrop-filter: blur(10px);
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-size: 0.75rem;
+      gap: 5px;
+      flex: 1;
+      transition: var(--transition);
+      position: relative;
+    }
+    .tab-btn.active {
+      color: var(--amber);
+      anchor-name: --active-tab;
+    }
+    .tab-btn svg {
+      width: 22px;
+      height: 22px;
+      fill: currentColor;
+    }
+    
+    /* Modern active underline animation utilizing CSS @supports for fallback */
+    .tab-bar::before {
+      content: '';
+      position: absolute;
+      position-anchor: --active-tab;
+      inset-inline-start: anchor(left);
+      inset-inline-end: anchor(right);
+      inset-block-start: 0;
+      block-size: 3px;
+      background: var(--amber);
+      box-shadow: 0 0 10px var(--amber);
+    }
+    @media (prefers-reduced-motion: no-preference) {
+      .tab-bar::before {
+        transition: inset 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+    }
+    @supports not (position-anchor: auto) {
+      .tab-bar::before {
+        display: none;
+      }
+      .tab-btn.active {
+        border-top: 3px solid var(--amber);
+        padding-top: 7px;
+      }
+    }
+    
+    /* ── Grid Layouts ── */
+    .grid-2x2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      margin-top: 15px;
+    }
+    @media (max-width: 600px) {
+      .grid-2x2 {
+        grid-template-columns: 1fr;
+      }
+    }
+    
+    /* ── Light Card Styles ── */
+    .light-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      cursor: pointer;
+      transition: border-color var(--transition), box-shadow var(--transition), background-color var(--transition);
+      overflow: hidden;
+    }
+    .light-card:hover {
+      border-color: rgba(245, 166, 35, 0.4);
+    }
+    .light-card.on {
+      border-color: var(--amber);
+      box-shadow: 0 0 15px rgba(245, 166, 35, 0.15);
+      background: linear-gradient(145deg, var(--card-bg) 0%, rgba(245, 166, 35, 0.03) 100%);
+    }
+    .light-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 20px;
+    }
+    .light-icon-wrapper {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.03);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      transition: var(--transition);
+    }
+    .light-card.on .light-icon-wrapper {
+      color: var(--amber);
+      background: rgba(245, 166, 35, 0.1);
+      border-color: rgba(245, 166, 35, 0.3);
+    }
+    .light-icon-wrapper svg {
+      width: 26px;
+      height: 26px;
+      fill: currentColor;
+    }
+    .watt-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: rgba(255,255,255,0.05);
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .light-card.on .watt-badge {
+      color: var(--amber);
+      background: rgba(245, 166, 35, 0.1);
+      border-color: rgba(245, 166, 35, 0.2);
+    }
+    .light-card-info {
+      margin-bottom: 20px;
+    }
+    .light-name {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .light-schedule {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-family: monospace;
+    }
+    .light-card-bottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .light-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .light-card.on .light-status {
+      color: var(--amber);
+    }
+    .state-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-dim);
+    }
+    .light-card.on .state-dot {
+      background: var(--amber);
+      box-shadow: 0 0 8px var(--amber);
+    }
+    
+    /* Toggle Switch */
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      pointer-events: none;
+    }
+    .switch-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background-color: var(--text-dim);
+      transition: .3s;
+      border-radius: 24px;
+    }
+    .switch-slider:before {
+      position: absolute;
+      content: "";
+      height: 18px; width: 18px;
+      left: 3px; bottom: 3px;
+      background-color: white;
+      transition: .3s;
+      border-radius: 50%;
+    }
+    .light-card.on .switch-slider {
+      background-color: var(--amber);
+    }
+    .light-card.on .switch-slider:before {
+      transform: translateX(20px);
+    }
+    
+    /* Quick Actions */
+    .quick-actions {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .btn {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: var(--transition);
+      font-size: 0.9rem;
+    }
+    .btn:hover {
+      border-color: var(--text-muted);
+    }
+    .btn-primary {
+      background: var(--amber);
+      color: #000;
+      border-color: var(--amber);
+    }
+    .btn-primary:hover {
+      background: #e0961b;
+      border-color: #e0961b;
+    }
+    .btn-danger {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--red);
+      border-color: rgba(239, 68, 68, 0.2);
+    }
+    .btn-danger:hover {
+      background: var(--red);
+      color: white;
+    }
+    
+    /* ── Metric Cards ── */
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 15px;
+      margin-bottom: 25px;
+    }
+    @media (max-width: 600px) {
+      .metric-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    .metric-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .metric-label {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .metric-value {
+      font-size: 1.3rem;
+      font-weight: 700;
+      font-family: monospace;
+      color: var(--text);
+    }
+    .metric-unit {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-left: 2px;
+    }
+    
+    /* ── Power Chart ── */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 25px;
+    }
+    .card-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 15px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .chart-container {
+      height: 180px;
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      padding-top: 10px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+    .chart-bar-wrapper {
+      flex: 1;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      align-items: center;
+      position: relative;
+      group: hover;
+    }
+    .chart-bar {
+      width: 100%;
+      background: rgba(59, 130, 246, 0.4); /* Dimmed blue */
+      border-radius: 3px 3px 0 0;
+      min-height: 2px;
+      transition: height 0.5s ease, background-color var(--transition);
+      cursor: pointer;
+    }
+    .chart-bar-wrapper.current .chart-bar {
+      background: var(--amber);
+      box-shadow: 0 0 8px rgba(245, 166, 35, 0.4);
+    }
+    .chart-bar-wrapper:hover .chart-bar {
+      background: rgba(59, 130, 246, 0.8);
+    }
+    .chart-bar-wrapper.current:hover .chart-bar {
+      background: #ffb84d;
+    }
+    .chart-tooltip {
+      position: absolute;
+      bottom: 100%;
+      background: #000;
+      color: #fff;
+      padding: 4px 6px;
+      border-radius: 4px;
+      font-size: 0.65rem;
+      font-family: monospace;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(-5px);
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 10;
+      border: 1px solid var(--border);
+    }
+    .chart-bar-wrapper:hover .chart-tooltip {
+      opacity: 1;
+      transform: translateY(-8px);
+    }
+    .chart-x-axis {
+      display: flex;
+      justify-content: space-between;
+      padding-top: 6px;
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+    .chart-x-label {
+      flex: 1;
+      text-align: center;
+    }
+    
+    /* ── Table Styles ── */
+    .table-responsive {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+    th, td {
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+    td {
+      color: var(--text);
+    }
+    .font-mono {
+      font-family: monospace;
+    }
+    
+    /* ── Schedule Styles ── */
+    .sched-section {
+      margin-bottom: 30px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .sched-header {
+      background: rgba(255,255,255,0.02);
+      padding: 15px 20px;
+      font-weight: 600;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .sched-header svg {
+      width: 20px;
+      height: 20px;
+      fill: var(--amber);
+    }
+    .sched-list {
+      background: var(--card-bg);
+    }
+    .sched-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 15px;
+      padding: 15px 20px;
+      border-bottom: 1px solid var(--border);
+      position: relative;
+    }
+    .sched-row:last-child {
+      border-bottom: none;
+    }
+    .sched-days {
+      display: flex;
+      gap: 4px;
+    }
+    .day-chk {
+      display: none;
+    }
+    .day-label {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+      transition: var(--transition);
+      color: var(--text-muted);
+    }
+    .day-chk:checked + .day-label {
+      background: var(--amber);
+      border-color: var(--amber);
+      color: #000;
+    }
+    .sched-times {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .time-input {
+      background: #141c2c;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 0.85rem;
+      outline: none;
+    }
+    .time-sep {
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+    .sched-controls {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+    }
+    .unsaved-badge {
+      display: none;
+      background: rgba(245, 166, 35, 0.15);
+      border: 1px solid var(--amber);
+      color: var(--amber);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      margin-bottom: 15px;
+      text-align: center;
+      animation: pulse 2s infinite ease-in-out;
+    }
+    
+    /* ── Settings Forms ── */
+    .form-group {
+      margin-bottom: 20px;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-bottom: 6px;
+    }
+    .input-field {
+      width: 100%;
+      background: #141c2c;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 8px;
+      outline: none;
+      font-size: 0.95rem;
+      transition: var(--transition);
+    }
+    .input-field:focus {
+      border-color: var(--amber);
+    }
+    
+    /* Accordion (Documentation) */
+    .doc-accordion {
+      margin-top: 30px;
+      border-top: 1px solid var(--border);
+      padding-top: 25px;
+    }
+    .doc-title {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 15px;
+    }
+    .doc-tabs-nav {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 15px;
+      gap: 5px;
+    }
+    .doc-tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      font-weight: 600;
+      border-bottom: 2px solid transparent;
+      transition: var(--transition);
+    }
+    .doc-tab-btn.active {
+      color: var(--amber);
+      border-bottom-color: var(--amber);
+    }
+    .doc-tab-content {
+      display: none;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      color: var(--text-muted);
+    }
+    .doc-tab-content.active {
+      display: block;
+    }
+    .doc-tab-content ol, .doc-tab-content ul {
+      padding-left: 20px;
+      margin: 10px 0;
+    }
+    .doc-tab-content li {
+      margin-bottom: 6px;
+    }
+    
+    /* ── OTA Drag Drop ── */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 30px 20px;
+      text-align: center;
+      background: rgba(255,255,255,0.01);
+      cursor: pointer;
+      transition: var(--transition);
+      margin-bottom: 20px;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--amber);
+      background: rgba(245, 166, 35, 0.02);
+    }
+    .drop-zone-text {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    .progress-bar-container {
+      width: 100%;
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      margin-top: 15px;
+      display: none;
+    }
+    .progress-bar {
+      height: 100%;
+      width: 0%;
+      background: var(--amber);
+      transition: width 0.1s linear;
+    }
+    .ota-status {
+      font-size: 0.85rem;
+      font-family: monospace;
+      margin-top: 10px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+    
+    /* Toast Notification */
+    .toast {
+      position: fixed;
+      bottom: 90px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: #000;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 12px 24px;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 2000;
+      opacity: 0;
+      transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s ease;
+      font-size: 0.9rem;
+      font-weight: 500;
+      text-align: center;
+      min-width: 250px;
+    }
+    .toast.show {
+      transform: translateX(-50%) translateY(0);
+      opacity: 1;
+    }
+    .toast.success {
+      border-color: var(--green);
+    }
+    .toast.error {
+      border-color: var(--red);
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="header-left">
+      <div class="header-title">House Lights</div>
+      <div class="header-info" id="device-info">Connecting...</div>
+    </div>
+    <div class="header-right">
+      <div class="status-dot" id="status-dot"></div>
+      <div class="current-time" id="current-time">00:00</div>
+    </div>
+  </header>
+
+  <div class="grace-banner" id="grace-banner" style="display: none;">
+    ⏳ Schedule starting in <span id="grace-countdown">0:00</span> — manual control active
+  </div>
+
+  <div class="container">
+
+    <!-- ── TAB 1: LIGHTS ── -->
+    <div id="tab-lights" class="tab-content active">
+      <div class="quick-actions">
+        <button class="btn btn-primary" onclick="setAllLights(true)">
+          <svg style="width:18px;height:18px;fill:currentColor" viewBox="0 0 24 24"><path d="M12 2F10 10 0 002 12a10 10 0 0010 10 10 10 0 0010-10A10 10 0 0012 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8m0-13a5 5 0 00-5 5h2a3 3 0 013-3V7z"/></svg>
+          All On
+        </button>
+        <button class="btn" onclick="setAllLights(false)">
+          <svg style="width:18px;height:18px;fill:currentColor" viewBox="0 0 24 24"><path d="M12 2A10 10 0 002 12a10 10 0 0010 10 10 10 0 0010-10A10 10 0 0012 2m0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8m-1-13h2v10h-2V7z"/></svg>
+          All Off
+        </button>
+      </div>
+
+      <div class="grid-2x2" id="lights-grid">
+        <!-- JS inserts light cards here -->
+      </div>
+    </div>
+
+    <!-- ── TAB 2: POWER ── -->
+    <div id="tab-power" class="tab-content">
+      <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">Live Load</div>
+          <div class="metric-value"><span id="power-live">0</span><span class="metric-unit">W</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Today Est.</div>
+          <div class="metric-value"><span id="power-today">0</span><span class="metric-unit">Wh</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Monthly Est.</div>
+          <div class="metric-value"><span id="power-monthly">0</span><span class="metric-unit">kWh</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Cost / Day</div>
+          <div class="metric-value"><span id="power-cost">0</span><span class="metric-unit">PKR</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Peak Load</div>
+          <div class="metric-value"><span id="power-peak">85</span><span class="metric-unit">W</span></div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Uptime</div>
+          <div class="metric-value" style="font-size: 1.15rem; padding-top: 4px;" id="power-uptime">0m</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>24h Consumption History</span>
+          <span style="font-size: 0.75rem; color: var(--text-muted);">Values in Watt-hours (Wh)</span>
+        </div>
+        <div class="chart-container" id="hourly-chart">
+          <!-- 24 columns generated via JS -->
+        </div>
+        <div class="chart-x-axis" id="chart-x-axis">
+          <!-- Labels generated via JS -->
+        </div>
+      </div>
+
+      <div class="card" style="padding: 10px 0;">
+        <div class="card-title" style="padding: 0 20px;">Light Consumption Breakdown</div>
+        <div class="table-responsive">
+          <table>
+            <thead>
+              <tr>
+                <th>Light Name</th>
+                <th>Wattage</th>
+                <th>State</th>
+                <th>Active Today</th>
+                <th>Wh Today</th>
+                <th>Cost Today</th>
+              </tr>
+            </thead>
+            <tbody id="breakdown-tbody">
+              <!-- JS updates breakdown -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB 3: SCHEDULE ── -->
+    <div id="tab-schedule" class="tab-content">
+      <div class="unsaved-badge" id="sched-unsaved-banner">
+        ⚠️ You have unsaved schedule changes. Don't forget to Save!
+      </div>
+      
+      <div id="schedules-container">
+        <!-- JS builds rule editors per light -->
+      </div>
+
+      <button class="btn btn-primary" style="width: 100%; margin-top: 10px; padding: 14px;" onclick="saveSchedulesToServer()">
+        Save All Schedules
+      </button>
+    </div>
+
+    <!-- ── TAB 4: OTA ── -->
+    <div id="tab-ota" class="tab-content">
+      <div class="card">
+        <div class="card-title">Firmware Details</div>
+        <div style="font-size: 0.9rem; color: var(--text-muted); line-height: 1.8;">
+          <div style="display:flex; justify-content:space-between;"><span>Hostname:</span><span class="font-mono" style="color:var(--text)">house-lights</span></div>
+          <div style="display:flex; justify-content:space-between;"><span>Chipset:</span><span class="font-mono" style="color:var(--text)">ESP32-S2</span></div>
+          <div style="display:flex; justify-content:space-between;"><span>Free RAM Heap:</span><span class="font-mono" id="ota-heap" style="color:var(--text)">0 KB</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Upload New Firmware (.bin)</div>
+        
+        <input type="file" id="ota-file-input" style="display: none;" accept=".bin">
+        <div class="drop-zone" id="ota-drop-zone">
+          <div class="drop-zone-text" id="drop-zone-text">
+            Drag & drop firmware binary file here or <span style="color: var(--amber); text-decoration: underline;">browse</span>
+          </div>
+        </div>
+
+        <button class="btn btn-primary" id="btn-flash" style="width: 100%; display: none;" onclick="startHttpOta()">
+          Flash Firmware
+        </button>
+
+        <div class="progress-bar-container" id="ota-progress-container">
+          <div class="progress-bar" id="ota-progress-bar"></div>
+        </div>
+        <div class="ota-status" id="ota-status"></div>
+      </div>
+
+      <div class="card" style="background: rgba(255,255,255,0.01); border-color: rgba(255,255,255,0.05);">
+        <div class="card-title" style="font-size: 0.9rem; color: var(--text-muted);">ArduinoOTA Notes</div>
+        <p style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
+          You can also flash this ESP32 directly from the Arduino IDE over the local WiFi network. Select host <span class="font-mono" style="color: var(--amber)">house-lights</span> and enter the configuration OTA password.
+        </p>
+      </div>
+    </div>
+
+    <!-- ── TAB 5: SETTINGS ── -->
+    <div id="tab-settings" class="tab-content">
+      <div class="card">
+        <div class="card-title">Rename Lights (max 32 chars)</div>
+        <div id="settings-names-fields">
+          <!-- JS generates fields -->
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Configure Power Wattages (W)</div>
+        <div id="settings-watts-fields">
+          <!-- JS generates fields -->
+        </div>
+      </div>
+
+      <button class="btn btn-primary" style="width: 100%; padding: 14px;" onclick="saveSettingsToServer()">
+        Save Settings
+      </button>
+
+      <!-- Documentation Accordion -->
+      <div class="doc-accordion">
+        <div class="doc-title">System Documentation</div>
+        <div class="doc-tabs-nav">
+          <button class="doc-tab-btn active" onclick="switchDocTab(0)">Offline / No WiFi</button>
+          <button class="doc-tab-btn" onclick="switchDocTab(1)">Wiring Diagram</button>
+          <button class="doc-tab-btn" onclick="switchDocTab(2)">Troubleshooting</button>
+        </div>
+        
+        <div class="doc-tab-content active" id="doc-tab-0">
+          <ol>
+            <li><strong>Fully Standalone:</strong> The ESP32-S2 is designed to run completely offline without an active internet connection. All manual push buttons toggle their relays instantly.</li>
+            <li><strong>Clock Preservation:</strong> The system clock will synchronize with NTP when connected to WiFi and preserve accuracy. The device is powered by a UPS ensuring uninterrupted schedule tracking.</li>
+            <li><strong>Dashboard Access:</strong> Connect your phone, computer, or tablet to the same Wi-Fi network and navigate to the IP address shown in the header (e.g. <code>http://192.168.1.15</code>).</li>
+            <li><strong>Static IP Tip:</strong> Reserve a static IP address for the MAC address of the ESP32 in your router settings to prevent it from changing.</li>
+          </ol>
+        </div>
+
+        <div class="doc-tab-content" id="doc-tab-1">
+          <div class="table-responsive">
+            <table>
+              <thead>
+                <tr>
+                  <th>Component Pin</th>
+                  <th>ESP32 GPIO</th>
+                  <th>Hardware Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>Relay VCC</td><td class="font-mono">5V</td><td>Must be 5V (from DC+ bus bar, not 3.3V)</td></tr>
+                <tr><td>Relay GND</td><td class="font-mono">GND</td><td>DC− bus bar</td></tr>
+                <tr><td>Relay IN1</td><td class="font-mono">GPIO 11</td><td>Light 1 Control (Front Green Belt) (LOW = ON)</td></tr>
+                <tr><td>Relay IN2</td><td class="font-mono">GPIO 12</td><td>Light 2 Control (Back Gate) (LOW = ON)</td></tr>
+                <tr><td>Relay IN3</td><td class="font-mono">GPIO 13</td><td>Light 3 Control (Side Wall) (LOW = ON)</td></tr>
+                <tr><td>Relay IN4</td><td class="font-mono">GPIO 14</td><td>Light 4 Control (Front Wall) (LOW = ON)</td></tr>
+                <tr><td>Relay COM</td><td class="font-mono">—</td><td>AC Live (from ELCB output)</td></tr>
+                <tr><td>Relay NO</td><td class="font-mono">—</td><td>Light terminal 1 (Normally Open)</td></tr>
+                <tr><td>Relay NC</td><td class="font-mono">—</td><td>Leave unconnected</td></tr>
+                <tr><td>Neutral</td><td class="font-mono">—</td><td>Light terminal 2 (direct from neutral bar)</td></tr>
+                <tr><td>Button 1 Leg A</td><td class="font-mono">GPIO 1</td><td>Other leg to GND (Internal Pull-up)</td></tr>
+                <tr><td>Button 2 Leg A</td><td class="font-mono">GPIO 2</td><td>Other leg to GND (Internal Pull-up)</td></tr>
+                <tr><td>Button 3 Leg A</td><td class="font-mono">GPIO 3</td><td>Other leg to GND (Internal Pull-up)</td></tr>
+                <tr><td>Button 4 Leg A</td><td class="font-mono">GPIO 4</td><td>Other leg to GND (Internal Pull-up)</td></tr>
+                <tr><td>Power input</td><td class="font-mono">5V / GND</td><td>USB-C Always-on (UPS Battery backed)</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p style="margin-top: 10px; font-size: 0.8rem; color: var(--red);">
+            ⚠️ <strong>HIGH VOLTAGE WARNING:</strong> AC wiring must only go through the relay contact terminals. Connect AC Live through an ELCB breaker to the Relay COM terminal, then from Relay NO (Normally Open) to the Light terminal 1, and Neutral directly from the neutral bar to Light terminal 2. Keep Earth grounded to metal enclosures.
+          </p>
+        </div>
+
+        <div class="doc-tab-content" id="doc-tab-2">
+          <ul>
+            <li><strong>Dashboard won't load:</strong> Confirm the device is powered and your device is connected to the exact same WiFi network. Check the Router DHCP list for the IP address.</li>
+            <li><strong>Button does not respond:</strong> Check wiring. One pin of the push-button must connect to the correct GPIO and the other side must go directly to a GND pin on the ESP32.</li>
+            <li><strong>Relay does not trigger:</strong> Verify the relay board VCC is connected to 5V (not 3.3V). Optocoupler isolated coil relays require a stable 5V supply to energize the coils.</li>
+            <li><strong>Schedules not running:</strong> Look at the time in the header. If it displays <code>00:00</code> or dates from 1970, NTP synchronization has failed or the network connection was lost.</li>
+            <li><strong>Relays clicking at start:</strong> The schedule controller starts only after the 3-minute (180s) boot grace period. No automatic schedule triggers will occur during this interval.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Tab Bar Navigation ── -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" id="btn-tab-lights" onclick="switchTab('lights')">
+      <svg viewBox="0 0 24 24"><path d="M12 2c-3.86 0-7 3.14-7 7 0 2.89 1.76 5.37 4.29 6.42.34.14.71.26 1.1.35V18h3.22v-2.23c.39-.09.76-.21 1.1-.35C17.24 14.37 19 11.89 19 9c0-3.86-3.14-7-7-7zm2 18h-4v2h4v-2z"/></svg>
+      Lights
+    </button>
+    <button class="tab-btn" id="btn-tab-power" onclick="switchTab('power')">
+      <svg viewBox="0 0 24 24"><path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6h-6z"/></svg>
+      Power
+    </button>
+    <button class="tab-btn" id="btn-tab-schedule" onclick="switchTab('schedule')">
+      <svg viewBox="0 0 24 24"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm3.3 14.3L11 12.5V7h1.5v4.7l3.6 2.1-.8 1.5z"/></svg>
+      Schedule
+    </button>
+    <button class="tab-btn" id="btn-tab-ota" onclick="switchTab('ota')">
+      <svg viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+      OTA
+    </button>
+    <button class="tab-btn" id="btn-tab-settings" onclick="switchTab('settings')">
+      <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+      Settings
+    </button>
+  </nav>
+
+  <div class="toast" id="toast">Saved successfully!</div>
+
+  <script>
+    // State storage
+    let systemState = {
+      time: "00:00",
+      day: 0,
+      uptime: 0,
+      graceRemaining: 0,
+      lights: {},
+      chart: Array(24).fill(0)
+    };
+    
+    let schedules = {}; // format: { "sched1": [...], "sched2": [...], ... }
+    let originalSchedulesJson = ""; // For dirty checking
+    let settings = { names: [], watts: [] };
+
+    const DAYS_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+    
+    // Light icons mapping (matching types in system configuration)
+    const LIGHT_ICONS = {
+      1: `<svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.87-3.13-7-7-7zm1.5 14h-3v-1h3v1zm0-2h-3v-1h3v1z"/></svg>`, // Light 1: Bulb (Front Green Belt)
+      2: `<svg viewBox="0 0 24 24"><path d="M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-9 12H8v-2h2v2zm0-4H8V8h2v4zm6 4h-2v-2h2v2zm0-4h-2V8h2v4z"/></svg>`, // Light 2: Gate (Back Gate)
+      3: `<svg viewBox="0 0 24 24"><path d="M19 4H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM9 18H5v-4h4v4zm0-6H5V8h4v4zm10 6h-8V8h8v10z"/></svg>`, // Light 3: Wall (Side Wall)
+      4: `<svg viewBox="0 0 24 24"><path d="M19 4H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM9 18H5v-4h4v4zm0-6H5V8h4v4zm10 6h-8V8h8v10z"/></svg>`  // Light 4: Wall (Front Wall)
+    };
+
+    // Tab switcher
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      
+      const tabEl = document.getElementById(`tab-${tabId}`);
+      if (tabEl) tabEl.classList.add('active');
+      
+      const btnEl = document.getElementById(`btn-tab-${tabId}`);
+      if (btnEl) btnEl.classList.add('active');
+    }
+
+    // Settings Doc Tab switcher
+    function switchDocTab(index) {
+      document.querySelectorAll('.doc-tab-btn').forEach((btn, i) => {
+        btn.classList.toggle('active', i === index);
+      });
+      document.querySelectorAll('.doc-tab-content').forEach((content, i) => {
+        content.classList.toggle('active', i === index);
+      });
+    }
+
+    // Toast Notification
+    function showToast(text, type = "success") {
+      const toast = document.getElementById('toast');
+      toast.innerText = text;
+      toast.className = `toast show ${type}`;
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 3000);
+    }
+
+    // Format Uptime
+    function formatUptime(seconds) {
+      if (seconds < 60) return `${seconds}s`;
+      let mins = Math.floor(seconds / 60);
+      if (mins < 60) return `${mins}m`;
+      let hrs = Math.floor(mins / 60);
+      let remainingMins = mins % 60;
+      return `${hrs}h ${remainingMins}m`;
+    }
+
+    // Toggle a light
+    function toggleLight(id) {
+      const state = systemState.lights[id].state;
+      const endpoint = `/light/${id}/${state ? 'off' : 'on'}`;
+      
+      fetch(endpoint)
+        .then(res => res.json())
+        .then(data => {
+          if (data.ok) {
+            systemState.lights[id].state = !state;
+            updateUI();
+          }
+        })
+        .catch(err => showToast("Error toggling light", "error"));
+    }
+
+    // Set All Lights
+    function setAllLights(onState) {
+      const promises = Object.keys(systemState.lights).map(id => {
+        return fetch(`/light/${id}/${onState ? 'on' : 'off'}`);
+      });
+      
+      Promise.all(promises)
+        .then(() => {
+          Object.keys(systemState.lights).forEach(id => {
+            systemState.lights[id].state = onState;
+          });
+          updateUI();
+          showToast(`All lights turned ${onState ? 'ON' : 'OFF'}`);
+        })
+        .catch(err => showToast("Error modifying lights", "error"));
+    }
+
+    // Update the UI elements from systemState
+    function updateUI() {
+      // Time and Dot
+      document.getElementById('current-time').innerText = systemState.time;
+      document.getElementById('status-dot').className = 'status-dot online';
+      
+      // Grace period banner
+      const graceEl = document.getElementById('grace-banner');
+      if (systemState.graceRemaining > 0) {
+        graceEl.style.display = 'flex';
+        let mins = Math.floor(systemState.graceRemaining / 60);
+        let secs = systemState.graceRemaining % 60;
+        document.getElementById('grace-countdown').innerText = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      } else {
+        graceEl.style.display = 'none';
+      }
+
+      // Live Load & stats
+      let liveLoad = 0;
+      let peakLoad = 0;
+      Object.values(systemState.lights).forEach(l => {
+        peakLoad += l.watt;
+        if (l.state) liveLoad += l.watt;
+      });
+      document.getElementById('power-live').innerText = liveLoad;
+      document.getElementById('power-peak').innerText = peakLoad;
+      document.getElementById('power-uptime').innerText = formatUptime(systemState.uptime);
+
+      // Energy math
+      // Estimated Wh today
+      let todayEst = 0;
+      if (systemState.chart) {
+        todayEst = systemState.chart.reduce((a, b) => a + b, 0);
+      }
+      document.getElementById('power-today').innerText = todayEst.toFixed(1);
+
+      // Monthly Est. (kWh) - Extrapolated from today
+      // uptime in hours
+      let uptimeHrs = systemState.uptime / 3600.0;
+      let kwhMonthly = 0;
+      if (uptimeHrs > 0.05) {
+        // scale todayEst up to 30 days (720 hours)
+        let totalWhMonthly = (todayEst / uptimeHrs) * 720.0;
+        kwhMonthly = totalWhMonthly / 1000.0;
+      } else {
+        kwhMonthly = (liveLoad * 720.0) / 1000.0;
+      }
+      document.getElementById('power-monthly').innerText = kwhMonthly.toFixed(1);
+
+      // Cost / Day (PKR) at 50 PKR/kWh
+      let kwhToday = todayEst / 1000.0;
+      let costToday = kwhToday * 50.0;
+      // Extrapolate daily cost
+      let costPerDay = 0;
+      if (uptimeHrs > 0.05) {
+        costPerDay = (costToday / uptimeHrs) * 24.0;
+      } else {
+        costPerDay = (liveLoad / 1000.0) * 24.0 * 50.0;
+      }
+      document.getElementById('power-cost').innerText = costPerDay.toFixed(1);
+
+      // Lights Grid Render
+      const grid = document.getElementById('lights-grid');
+      let gridHTML = "";
+      Object.entries(systemState.lights).forEach(([id, l]) => {
+        // Find if this light has a schedule
+        let schedText = "No schedule";
+        if (schedules[`sched${id}`] && schedules[`sched${id}`].length > 0) {
+          const activeRule = schedules[`sched${id}`].find(r => r.enabled);
+          if (activeRule) {
+            schedText = `${activeRule.on_time} → ${activeRule.off_time}`;
+          }
+        }
+
+        gridHTML += `
+          <div class="light-card ${l.state ? 'on' : ''}" onclick="toggleLight(${id})">
+            <div class="light-card-top">
+              <div class="light-icon-wrapper">
+                ${LIGHT_ICONS[id] || ''}
+              </div>
+              <div class="watt-badge">${l.watt}W</div>
+            </div>
+            <div class="light-card-info">
+              <div class="light-name">${l.name}</div>
+              <div class="light-schedule">
+                <svg style="width:12px;height:12px;fill:currentColor" viewBox="0 0 24 24"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.2 3.15.8-1.34-4.5-2.66V7z"/></svg>
+                <span>${schedText}</span>
+              </div>
+            </div>
+            <div class="light-card-bottom">
+              <div class="light-status">
+                <div class="state-dot"></div>
+                <span>${l.state ? 'On' : 'Off'}</span>
+              </div>
+              <div class="switch">
+                <span class="switch-slider"></span>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      grid.innerHTML = gridHTML;
+
+      // Power chart columns render
+      const chartContainer = document.getElementById('hourly-chart');
+      const xAxisContainer = document.getElementById('chart-x-axis');
+      let chartHTML = "";
+      let xAxisHTML = "";
+      
+      const currentHour = parseInt(systemState.time.split(":")[0]) || 0;
+      let maxWh = Math.max(...(systemState.chart || []), 1.0);
+
+      for (let i = 0; i < 24; i++) {
+        let val = systemState.chart ? systemState.chart[i] : 0;
+        let pct = (val / maxWh) * 100;
+        let isCurrent = (i === currentHour);
+        
+        chartHTML += `
+          <div class="chart-bar-wrapper ${isCurrent ? 'current' : ''}">
+            <div class="chart-tooltip">${val.toFixed(1)} Wh<br>${i}:00</div>
+            <div class="chart-bar" style="height: ${pct}%;"></div>
+          </div>
+        `;
+
+        if (i % 4 === 0) {
+          xAxisHTML += `<div class="chart-x-label">${i < 10 ? '0' : ''}${i}:00</div>`;
+        }
+      }
+      chartContainer.innerHTML = chartHTML;
+      xAxisContainer.innerHTML = xAxisHTML;
+
+      // Power Breakdown table
+      const tbody = document.getElementById('breakdown-tbody');
+      let tbodyHTML = "";
+      Object.entries(systemState.lights).forEach(([id, l]) => {
+        // Simple estimations
+        // Active seconds: we can request active seconds but we can also estimate or track it.
+        // Let's assume we read the values from the ESP32 status.
+        let hrsOn = l.hoursOn || 0;
+        let wh = l.whToday || 0;
+        let cost = wh / 1000.0 * 50.0;
+
+        tbodyHTML += `
+          <tr>
+            <td style="font-weight: 500;">${l.name}</td>
+            <td class="font-mono">${l.watt}W</td>
+            <td>
+              <span class="font-mono" style="color: ${l.state ? 'var(--amber)' : 'var(--text-muted)'}; font-weight: 600;">
+                ${l.state ? 'ON' : 'OFF'}
+              </span>
+            </td>
+            <td class="font-mono">${hrsOn.toFixed(2)}h</td>
+            <td class="font-mono">${wh.toFixed(1)} Wh</td>
+            <td class="font-mono">PKR ${cost.toFixed(2)}</td>
+          </tr>
+        `;
+      });
+      tbody.innerHTML = tbodyHTML;
+    }
+
+    // Refresh status data
+    function refreshStatus() {
+      fetch('/status')
+        .then(res => res.json())
+        .then(data => {
+          systemState.time = data.time;
+          systemState.day = data.day;
+          systemState.uptime = data.uptime;
+          systemState.graceRemaining = data.graceRemaining;
+          
+          // Merge lights payload
+          Object.entries(data.lights).forEach(([id, payload]) => {
+            if (!systemState.lights[id]) systemState.lights[id] = {};
+            systemState.lights[id].name = payload.name;
+            systemState.lights[id].state = payload.state;
+            systemState.lights[id].watt = payload.watt;
+            systemState.lights[id].hoursOn = payload.hoursOn || 0;
+            systemState.lights[id].whToday = payload.whToday || 0;
+          });
+
+          if (data.chart) {
+            systemState.chart = data.chart;
+          }
+          
+          // Header IP
+          document.getElementById('device-info').innerText = `ESP32-S2 | IP: ${window.location.hostname || '192.168.1.15'}`;
+          
+          updateUI();
+        })
+        .catch(err => {
+          document.getElementById('status-dot').className = 'status-dot';
+          document.getElementById('device-info').innerText = "Disconnected";
+        });
+    }
+
+    // Load Schedules
+    function loadSchedules() {
+      fetch('/schedules')
+        .then(res => res.json())
+        .then(data => {
+          schedules = data;
+          originalSchedulesJson = JSON.stringify(schedules);
+          renderSchedulesUI();
+          updateUI(); // refresh lights tab text
+        })
+        .catch(err => showToast("Error loading schedules", "error"));
+    }
+
+    // Render Schedules editor interface
+    function renderSchedulesUI() {
+      const container = document.getElementById('schedules-container');
+      let html = "";
+
+      Object.entries(systemState.lights).forEach(([id, l]) => {
+        const lightRules = schedules[`sched${id}`] || [];
+        
+        html += `
+          <div class="sched-section">
+            <div class="sched-header">
+              ${LIGHT_ICONS[id] || ''}
+              <span>${l.name} Schedules</span>
+            </div>
+            <div class="sched-list" id="sched-list-${id}">
+        `;
+
+        lightRules.forEach((rule, rIdx) => {
+          html += `
+            <div class="sched-row" data-light="${id}" data-rule="${rIdx}">
+              <div class="sched-days">
+          `;
+
+          for (let d = 0; d < 7; d++) {
+            const isChecked = rule.days[d];
+            html += `
+              <input type="checkbox" class="day-chk" id="chk-${id}-${rIdx}-${d}" ${isChecked ? 'checked' : ''} onchange="onScheduleChange(${id}, ${rIdx})">
+              <label class="day-label" for="chk-${id}-${rIdx}-${d}">${DAYS_SHORT[d]}</label>
+            `;
+          }
+
+          html += `
+              </div>
+              <div class="sched-times">
+                <input type="time" class="time-input" id="time-on-${id}-${rIdx}" value="${rule.on_time}" onchange="onScheduleChange(${id}, ${rIdx})">
+                <span class="time-sep">→</span>
+                <input type="time" class="time-input" id="time-off-${id}-${rIdx}" value="${rule.off_time}" onchange="onScheduleChange(${id}, ${rIdx})">
+              </div>
+              <div class="sched-controls">
+                <div class="switch">
+                  <input type="checkbox" id="rule-en-${id}-${rIdx}" ${rule.enabled ? 'checked' : ''} onchange="onScheduleChange(${id}, ${rIdx})" style="display:none;">
+                  <span class="switch-slider" onclick="toggleRuleEn(${id}, ${rIdx})"></span>
+                </div>
+                <button class="btn btn-danger" style="padding: 6px; width: 28px; height: 28px;" onclick="deleteRule(${id}, ${rIdx})">×</button>
+              </div>
+            </div>
+          `;
+        });
+
+        if (lightRules.length < 4) {
+          html += `
+            <div style="padding: 15px; text-align: center; border-top: 1px solid var(--border);">
+              <button class="btn" onclick="addRule(${id})">+ Add Rule</button>
+            </div>
+          `;
+        }
+
+        html += `
+            </div>
+          </div>
+        `;
+      });
+
+      container.innerHTML = html;
+      checkForUnsavedSchedules();
+    }
+
+    // Schedule actions
+    function toggleRuleEn(lightId, ruleIdx) {
+      const chk = document.getElementById(`rule-en-${lightId}-${ruleIdx}`);
+      chk.checked = !chk.checked;
+      onScheduleChange(lightId, ruleIdx);
+    }
+
+    function onScheduleChange(lightId, ruleIdx) {
+      const key = `sched${lightId}`;
+      const rule = schedules[key][ruleIdx];
+      
+      // Update days
+      for (let d = 0; d < 7; d++) {
+        rule.days[d] = document.getElementById(`chk-${lightId}-${ruleIdx}-${d}`).checked;
+      }
+      
+      // Update times
+      rule.on_time = document.getElementById(`time-on-${lightId}-${ruleIdx}`).value;
+      rule.off_time = document.getElementById(`time-off-${lightId}-${ruleIdx}`).value;
+      
+      // Update enabled
+      rule.enabled = document.getElementById(`rule-en-${lightId}-${ruleIdx}`).checked;
+
+      checkForUnsavedSchedules();
+    }
+
+    function addRule(lightId) {
+      const key = `sched${lightId}`;
+      if (!schedules[key]) schedules[key] = [];
+      
+      if (schedules[key].length >= 4) {
+        showToast("Maximum 4 rules per light", "error");
+        return;
+      }
+
+      schedules[key].push({
+        days: Array(7).fill(true),
+        on_time: "18:00",
+        off_time: "06:00",
+        enabled: true
+      });
+
+      renderSchedulesUI();
+    }
+
+    function deleteRule(lightId, ruleIdx) {
+      const key = `sched${lightId}`;
+      schedules[key].splice(ruleIdx, 1);
+      renderSchedulesUI();
+    }
+
+    function checkForUnsavedSchedules() {
+      const banner = document.getElementById('sched-unsaved-banner');
+      const isDirty = (JSON.stringify(schedules) !== originalSchedulesJson);
+      banner.style.display = isDirty ? 'block' : 'none';
+    }
+
+    function saveSchedulesToServer() {
+      fetch('/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(schedules)
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.ok) {
+          showToast("Schedules saved successfully!");
+          originalSchedulesJson = JSON.stringify(schedules);
+          checkForUnsavedSchedules();
+          updateUI();
+        } else {
+          showToast("Error saving schedules", "error");
+        }
+      })
+      .catch(err => showToast("Network error saving schedules", "error"));
+    }
+
+    // Load Settings
+    function loadSettings() {
+      fetch('/settings')
+        .then(res => res.json())
+        .then(data => {
+          settings = data;
+          renderSettingsUI();
+        })
+        .catch(err => showToast("Error loading settings", "error"));
+    }
+
+    function renderSettingsUI() {
+      const namesContainer = document.getElementById('settings-names-fields');
+      const wattsContainer = document.getElementById('settings-watts-fields');
+      
+      let namesHTML = "";
+      let wattsHTML = "";
+
+      for (let i = 0; i < 4; i++) {
+        const id = i + 1;
+        const name = settings.names[i] || `Light ${id}`;
+        const watt = settings.watts[i] || 25;
+
+        namesHTML += `
+          <div class="form-group">
+            <label class="form-label" for="setting-name-${id}">Light ${id} Name</label>
+            <input type="text" class="input-field" id="setting-name-${id}" value="${name}" maxlength="32">
+          </div>
+        `;
+
+        wattsHTML += `
+          <div class="form-group">
+            <label class="form-label" for="setting-watt-${id}">Light ${id} Wattage (Watts)</label>
+            <input type="number" class="input-field" id="setting-watt-${id}" value="${watt}" min="1" max="1000" step="0.5">
+          </div>
+        `;
+      }
+
+      namesContainer.innerHTML = namesHTML;
+      wattsContainer.innerHTML = wattsHTML;
+    }
+
+    function saveSettingsToServer() {
+      const newNames = [];
+      const newWatts = [];
+
+      for (let i = 0; i < 4; i++) {
+        const id = i + 1;
+        newNames.push(document.getElementById(`setting-name-${id}`).value);
+        newWatts.push(parseFloat(document.getElementById(`setting-watt-${id}`).value) || 25);
+      }
+
+      fetch('/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ names: newNames, watts: newWatts })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.ok) {
+          showToast("Settings saved!");
+          // Reload status immediately to update card names
+          refreshStatus();
+        } else {
+          showToast("Failed to save settings", "error");
+        }
+      })
+      .catch(err => showToast("Network error saving settings", "error"));
+    }
+
+    // Drag Drop OTA handling
+    const dropZone = document.getElementById('ota-drop-zone');
+    const fileInput = document.getElementById('ota-file-input');
+    const flashBtn = document.getElementById('btn-flash');
+    const statusText = document.getElementById('ota-status');
+    const progressContainer = document.getElementById('ota-progress-container');
+    const progressBar = document.getElementById('ota-progress-bar');
+    let selectedFile = null;
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    
+    fileInput.addEventListener('change', (e) => {
+      handleFileSelected(e.target.files[0]);
+    });
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+
+    dropZone.addEventListener('dragleave', () => {
+      dropZone.classList.remove('dragover');
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      handleFileSelected(e.dataTransfer.files[0]);
+    });
+
+    function handleFileSelected(file) {
+      if (file && file.name.endsWith('.bin')) {
+        selectedFile = file;
+        document.getElementById('drop-zone-text').innerHTML = `Selected: <span style="color:var(--amber);font-family:monospace">${file.name}</span> (${(file.size/1024/1024).toFixed(2)} MB)`;
+        flashBtn.style.display = 'block';
+        statusText.innerText = "Ready to flash.";
+      } else {
+        showToast("Invalid file. Please select a .bin file.", "error");
+      }
+    }
+
+    function startHttpOta() {
+      if (!selectedFile) return;
+
+      const formData = new FormData();
+      formData.append("update", selectedFile);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/ota", true);
+
+      // Listen to progress
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) {
+          progressContainer.style.display = 'block';
+          const percentComplete = (e.loaded / e.total) * 100;
+          progressBar.style.width = `${percentComplete}%`;
+          statusText.innerText = `Uploading firmware: ${percentComplete.toFixed(0)}%`;
+        }
+      });
+
+      xhr.onload = function() {
+        if (xhr.status === 200) {
+          statusText.innerHTML = `<span style="color:var(--green);font-weight:600">Firmware Flash Successful! Rebooting...</span>`;
+          flashBtn.style.display = 'none';
+          dropZone.style.pointerEvents = 'none';
+          
+          let countdown = 3;
+          const timer = setInterval(() => {
+            statusText.innerText = `ESP32 rebooting in ${countdown}s...`;
+            countdown--;
+            if (countdown < 0) {
+              clearInterval(timer);
+              location.reload();
+            }
+          }, 1000);
+        } else {
+          statusText.innerHTML = `<span style="color:var(--red)">Flash Failed! ${xhr.responseText || 'Error during update.'}</span>`;
+          progressContainer.style.display = 'none';
+        }
+      };
+
+      xhr.onerror = function() {
+        statusText.innerHTML = `<span style="color:var(--red)">Upload failed. Check connection.</span>`;
+        progressContainer.style.display = 'none';
+      };
+
+      statusText.innerText = "Initiating upload...";
+      xhr.send(formData);
+    }
+
+    // Refresh Free Heap for OTA tab
+    function updateHeapInfo() {
+      fetch('/status')
+        .then(res => res.json())
+        .then(data => {
+          if (data.freeHeap) {
+            document.getElementById('ota-heap').innerText = `${(data.freeHeap/1024).toFixed(1)} KB`;
+          }
+        })
+        .catch(() => {});
+    }
+
+    // Initial setup
+    refreshStatus();
+    loadSchedules();
+    loadSettings();
+
+    // Intervals
+    setInterval(refreshStatus, 5000);
+    setInterval(updateHeapInfo, 10000);
+  </script>
+</body>
+</html>
