@@ -1,9 +1,9 @@
 // ── Config ─────────────────
-const char* WIFI_SSID         = "WIFI_SSID";
-const char* WIFI_PASSWORD     = "YOUR_PASSWORD";
+const char* WIFI_SSID         = "FiberHome";
+const char* WIFI_PASSWORD     = "Goldengate";
 const char* AUTH_USER         = "admin";
-const char* AUTH_PASSWORD     = "ADMIN";
-const char* OTA_PASSWORD      = "otapassword";
+const char* AUTH_PASSWORD     = "F4D47898";
+const char* OTA_PASSWORD      = "F4D47898";
 const char* NTP_SERVER        = "pool.ntp.org";
 const long  GMT_OFFSET_SEC    = 18000;      // UTC+5 Karachi
 const int   DAYLIGHT_OFFSET   = 0;          // No DST in Pakistan
@@ -18,8 +18,17 @@ const int RELAY_PINS[5] = {0, 11, 12, 13, 14}; // 1-based index (index 0 unused)
 // Buttons (GPIOs 1-4, active-low)
 const int BTN_PINS[5] = {0, 1, 2, 3, 4}; // 1-based index
 
+// NTC Thermistor (10k NTC + 10k fixed resistor, GPIO 6 = ADC1_CH5)
+// NTC_CONF: 0 = NTC to GND + pull-up to 3.3V, 1 = NTC to 3.3V + pull-down to GND
+const int NTC_PIN = 6;
+const float NTC_FIXED_R = 10000.0;    // Fixed resistor value (ohms)
+const float NTC_NOMINAL_R = 10000.0;  // NTC resistance at 25°C
+const float NTC_B_VALUE = 3950.0;     // NTC beta coefficient
+const int NTC_CONF = 1;               // Set to 1 if temp reads way too high
+
 // ── Libraries ──────────────
 #include <WiFi.h>
+#include <stdarg.h>
 #include <WebServer.h>
 #include <ArduinoOTA.h>
 #include <Preferences.h>
@@ -27,6 +36,59 @@ const int BTN_PINS[5] = {0, 1, 2, 3, 4}; // 1-based index
 #include <Update.h>
 #include <ArduinoJson.h>
 #include "web_ui.h"
+
+// ── Log Buffer ──────────────
+#define MAX_LOG_LINES 80
+#define MAX_LOG_LEN 120
+struct LogBuffer {
+  char lines[MAX_LOG_LINES][MAX_LOG_LEN];
+  int head = 0;
+  int tail = 0;
+  int count = 0;
+
+  void add(const char* msg) {
+    strncpy(lines[head], msg, MAX_LOG_LEN - 1);
+    lines[head][MAX_LOG_LEN - 1] = '\0';
+    head = (head + 1) % MAX_LOG_LINES;
+    if (count < MAX_LOG_LINES) count++;
+    else tail = (tail + 1) % MAX_LOG_LINES;
+  }
+
+  String getAll() {
+    String result = "[";
+    for (int i = 0; i < count; i++) {
+      int idx = (tail + i) % MAX_LOG_LINES;
+      if (i > 0) result += ",";
+      result += "\"";
+      for (char* p = lines[idx]; *p; p++) {
+        if (*p == '"') result += "\\\"";
+        else if (*p == '\\') result += "\\\\";
+        else if (*p == '\n') result += "\\n";
+        else if (*p == '\r') continue;
+        else result += *p;
+      }
+      result += "\"";
+    }
+    result += "]";
+    return result;
+  }
+
+  void clear() {
+    head = 0; tail = 0; count = 0;
+  }
+};
+
+LogBuffer logBuffer;
+
+void logMsg(const char* fmt, ...) {
+  char buf[MAX_LOG_LEN];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, MAX_LOG_LEN, fmt, args);
+  va_end(args);
+  Serial.print(buf);
+  logBuffer.add(buf);
+}
 
 // ── Globals + State ────────
 WebServer server(80);
@@ -51,6 +113,7 @@ int ruleCounts[5] = {0, 0, 0, 0, 0};
 
 // Timing and System State
 bool graceEnded = false;
+bool timeSynced = false;
 unsigned long lastGracePrintTime = 0;
 unsigned long lastWifiCheckTime = 0;
 unsigned long lastNtpSyncTime = 0;
@@ -62,6 +125,10 @@ float totalEnergySinceBoot = 0.0;
 unsigned long lastEnergyUpdateTime = 0;
 unsigned long secondsActive[5] = {0, 0, 0, 0, 0};
 float energyConsumed[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+
+// NTC Temperature State
+float filteredTemperature = -1;
+float tempCalibration = 0.0;
 
 // Button Debounce States
 int buttonState[5] = {HIGH, HIGH, HIGH, HIGH, HIGH};
@@ -75,6 +142,10 @@ void syncNTP();
 void parseScheduleJson(int id, String jsonStr);
 String serializeScheduleJson(int id);
 void updatePowerMetrics();
+bool hasActiveSchedule(int id);
+void parseTimeStr(const char* timeStr, int& hour, int& min);
+bool isTimeInActiveSchedule(int id, const struct tm& timeinfo);
+void reconcileSchedules();
 
 // ── Preferences / NVS ──────
 void loadSettingsFromNVS() {
@@ -98,6 +169,7 @@ void loadSettingsFromNVS() {
     preferences.putBool("state2", false);
     preferences.putBool("state3", false);
     preferences.putBool("state4", false);
+    preferences.putFloat("tempCal", 0.0);
     preferences.putBool("init", true);
   }
   
@@ -109,6 +181,8 @@ void loadSettingsFromNVS() {
     String schedJson = preferences.getString(("sched" + String(i)).c_str(), "[]");
     parseScheduleJson(i, schedJson);
   }
+  
+  tempCalibration = preferences.getFloat("tempCal", 0.0);
   
   preferences.end();
 }
@@ -170,8 +244,7 @@ String serializeScheduleJson(int id) {
 
 // ── WiFi + NTP ─────────────
 void setupWiFi() {
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(WIFI_SSID);
+  logMsg("Connecting to WiFi: %s\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   
   unsigned long startAttempt = millis();
@@ -182,11 +255,10 @@ void setupWiFi() {
   Serial.println();
   
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("WiFi connected — IP: ");
-    Serial.println(WiFi.localIP());
+    logMsg("WiFi connected — IP: %s\n", WiFi.localIP().toString().c_str());
     syncNTP();
   } else {
-    Serial.println("WiFi connection timed out. Booting in offline mode.");
+    logMsg("WiFi connection timed out. Booting in offline mode.\n");
   }
   lastWifiCheckTime = millis();
 }
@@ -195,7 +267,7 @@ void checkWifiConnection() {
   if (millis() - lastWifiCheckTime >= 10000) {
     lastWifiCheckTime = millis();
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("WiFi connection lost. Attempting auto-reconnect...");
+      logMsg("WiFi connection lost. Reconnecting...\n");
       WiFi.disconnect();
       WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     }
@@ -205,18 +277,29 @@ void checkWifiConnection() {
 void syncNTP() {
   configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET, NTP_SERVER);
   struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    Serial.printf("Time synced: %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  if (getLocalTime(&timeinfo, 5000)) {
+    logMsg("Time synced: %02d:%02d:%02d\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     lastNtpSyncTime = millis();
+    timeSynced = true;
+    graceEnded = true; // Time verified: exit boot grace and reconcile immediately
+    reconcileSchedules();
   } else {
-    Serial.println("NTP synchronization failed.");
+    logMsg("NTP synchronization failed.\n");
   }
 }
 
 void checkNtpResync() {
-  if (WiFi.status() == WL_CONNECTED && (millis() - lastNtpSyncTime >= 3600000)) { // 1 hour
-    syncNTP();
-    Serial.println("NTP re-synced");
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!timeSynced) {
+      // Retry every 5 seconds until initial sync (handles slow router boot)
+      if (millis() - lastNtpSyncTime >= 5000) {
+        lastNtpSyncTime = millis();
+        syncNTP();
+      }
+    } else if (millis() - lastNtpSyncTime >= 3600000) { // 1 hour regular resync
+      syncNTP();
+      logMsg("NTP re-synced\n");
+    }
   }
 }
 
@@ -227,16 +310,16 @@ void setupArduinoOTA() {
   ArduinoOTA.setPassword(OTA_PASSWORD);
   
   ArduinoOTA.onStart([]() {
-    Serial.println("ArduinoOTA Update started.");
+    logMsg("ArduinoOTA Update started.\n");
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("\nArduinoOTA Update complete.");
+    logMsg("ArduinoOTA Update complete.\n");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("OTA progress: %u%%\n", (progress / (total / 100)));
+    logMsg("OTA progress: %u%%\n", (progress / (total / 100)));
   });
   ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("ArduinoOTA Error[%u]: ", error);
+    logMsg("ArduinoOTA Error[%u]\n", error);
   });
   ArduinoOTA.begin();
 }
@@ -267,7 +350,7 @@ void setLightState(int id, bool state, const char* source) {
   if (id < 1 || id > 4) return;
   lightStates[id] = state;
   digitalWrite(RELAY_PINS[id], state ? LOW : HIGH); // LOW = ON, HIGH = OFF
-  Serial.printf("Light %d [%s] → %s (%s)\n", id, lightNames[id].c_str(), state ? "ON" : "OFF", source);
+  logMsg("Light %d [%s] → %s (%s)\n", id, lightNames[id].c_str(), state ? "ON" : "OFF", source);
   saveLightStatesToNVS();
 }
 
@@ -277,16 +360,81 @@ void toggleLight(int id, const char* source) {
 }
 
 // ── Schedule Checker ───────
+bool hasActiveSchedule(int id) {
+  if (id < 1 || id > 4) return false;
+  for (int r = 0; r < ruleCounts[id]; r++) {
+    if (schedules[id][r].enabled) return true;
+  }
+  return false;
+}
+
 void parseTimeStr(const char* timeStr, int& hour, int& min) {
   hour = 0; min = 0;
   sscanf(timeStr, "%d:%d", &hour, &min);
+}
+
+bool isTimeInActiveSchedule(int id, const struct tm& timeinfo) {
+  int now = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  int today = timeinfo.tm_wday; // 0=Sunday, ..., 6=Saturday
+  int yesterday = (today + 6) % 7;
+
+  for (int r = 0; r < ruleCounts[id]; r++) {
+    const ScheduleRule& rule = schedules[id][r];
+    if (!rule.enabled) continue;
+
+    int on_h, on_m, off_h, off_m;
+    parseTimeStr(rule.on_time, on_h, on_m);
+    parseTimeStr(rule.off_time, off_h, off_m);
+
+    int on = on_h * 60 + on_m;
+    int off = off_h * 60 + off_m;
+
+    if (on == off) continue; // 0-duration rule
+
+    if (off > on) {
+      // Same-day window (e.g. 08:00 to 17:00)
+      if (now >= on && now < off && rule.days[today]) {
+        return true;
+      }
+    } else {
+      // Midnight-crossover window (e.g. 18:00 to 06:00 next day)
+      // Evening portion on starting day
+      if (now >= on && rule.days[today]) {
+        return true;
+      }
+      // Morning portion running from previous day
+      if (now < off && rule.days[yesterday]) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void reconcileSchedules() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 50)) return;
+
+  logMsg("Reconciling schedules for %02d:%02d (Day %d)\n", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_wday);
+
+  for (int id = 1; id <= 4; id++) {
+    // Non-scheduled lights are purely manual — never altered by schedules
+    if (!hasActiveSchedule(id)) continue;
+
+    bool shouldBeOn = isTimeInActiveSchedule(id, timeinfo);
+    if (lightStates[id] != shouldBeOn) {
+      setLightState(id, shouldBeOn, "schedule");
+      logMsg("Schedule reconciled: Light %d [%s] -> %s (current time %02d:%02d)\n",
+        id, lightNames[id].c_str(), shouldBeOn ? "ON" : "OFF", timeinfo.tm_hour, timeinfo.tm_min);
+    }
+  }
 }
 
 void evaluateSchedules() {
   if (!graceEnded) return;
   
   struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) return;
+  if (!getLocalTime(&timeinfo, 50)) return;
   
   int current_min = timeinfo.tm_min;
   if (current_min == lastCheckedMinute) return;
@@ -295,7 +443,7 @@ void evaluateSchedules() {
   int current_hour = timeinfo.tm_hour;
   int current_day = timeinfo.tm_wday; // 0=Sunday, ..., 6=Saturday
   
-  Serial.printf("Schedule checked: %02d:%02d\n", current_hour, current_min);
+  logMsg("Schedule checked: %02d:%02d\n", current_hour, current_min);
   
   for (int id = 1; id <= 4; id++) {
     for (int r = 0; r < ruleCounts[id]; r++) {
@@ -326,6 +474,39 @@ void evaluateSchedules() {
       }
     }
   }
+}
+
+// ── NTC Temperature ────────
+float readTemperature() {
+  long sum = 0;
+  int valid = 0;
+  for (int i = 0; i < 32; i++) {
+    int v = analogRead(NTC_PIN);
+    if (v > 0 && v < 4095) { sum += v; valid++; }
+    delay(1);
+  }
+  if (valid == 0) return -1;
+  int raw = sum / valid;
+
+  float Vout = (raw / 4095.0) * 3.3;
+  float R_ntc;
+
+  if (NTC_CONF == 1) {
+    // NTC to 3.3V, fixed pull-down to GND
+    R_ntc = ((3.3 - Vout) * NTC_FIXED_R) / Vout;
+  } else {
+    // NTC to GND, fixed pull-up to 3.3V
+    R_ntc = (Vout * NTC_FIXED_R) / (3.3 - Vout);
+  }
+
+  if (R_ntc <= 0) return -1;
+
+  float steinhart = log(R_ntc / NTC_NOMINAL_R);
+  steinhart /= NTC_B_VALUE;
+  steinhart += 1.0 / 298.15;
+  steinhart = 1.0 / steinhart;
+  steinhart -= 273.15;
+  return steinhart;
 }
 
 // ── Power Metrics ──────────
@@ -389,6 +570,7 @@ void setupWebServer() {
   server.on("/schedules", HTTP_OPTIONS, []() { sendCORSHeaders(); server.send(200, "text/plain", ""); });
   server.on("/settings", HTTP_OPTIONS, []() { sendCORSHeaders(); server.send(200, "text/plain", ""); });
   server.on("/ota", HTTP_OPTIONS, []() { sendCORSHeaders(); server.send(200, "text/plain", ""); });
+  server.on("/logs", HTTP_OPTIONS, []() { sendCORSHeaders(); server.send(200, "text/plain", ""); });
 
   // Web GUI
   server.on("/", HTTP_GET, []() {
@@ -402,6 +584,23 @@ void setupWebServer() {
   server.on("/ping", HTTP_GET, []() {
     sendCORSHeaders();
     server.send(200, "text/plain", "pong");
+  });
+
+  // /logs
+  server.on("/logs", HTTP_GET, []() {
+    if (!checkAuth()) return;
+    sendCORSHeaders();
+    String json = logBuffer.getAll();
+    server.send(200, "application/json", json);
+  });
+
+  // /logs DELETE (clear logs)
+  server.on("/logs", HTTP_DELETE, []() {
+    if (!checkAuth()) return;
+    sendCORSHeaders();
+    logBuffer.clear();
+    logMsg("Logs cleared via web UI\n");
+    server.send(200, "application/json", "{\"ok\":true}");
   });
 
   // /status
@@ -429,6 +628,13 @@ void setupWebServer() {
     }
     doc["graceRemaining"] = graceRemaining;
     doc["freeHeap"] = ESP.getFreeHeap();
+
+    float rawTemp = readTemperature();
+    if (rawTemp > -1) {
+      if (filteredTemperature < 0) filteredTemperature = rawTemp;
+      else filteredTemperature += (rawTemp - filteredTemperature) * 0.2;
+    }
+    doc["temperature"] = filteredTemperature + tempCalibration;
     
     JsonObject lightsObj = doc.createNestedObject("lights");
     for (int i = 1; i <= 4; i++) {
@@ -505,6 +711,9 @@ void setupWebServer() {
       }
     }
     preferences.end();
+    if (timeSynced) {
+      reconcileSchedules();
+    }
     
     sendCORSHeaders();
     server.send(200, "application/json", "{\"ok\":true}");
@@ -520,6 +729,7 @@ void setupWebServer() {
       names.add(lightNames[i]);
       watts.add(lightWatts[i]);
     }
+    doc["tempCal"] = tempCalibration;
     String response;
     serializeJson(doc, response);
     sendCORSHeaders();
@@ -553,7 +763,7 @@ void setupWebServer() {
         if (newName.length() > 0 && newName.length() <= 32) {
           lightNames[id] = newName;
           preferences.putString(("name" + String(id)).c_str(), newName);
-          Serial.printf("Settings saved: name%d=%s\n", id, newName.c_str());
+          logMsg("Settings saved: name%d=%s\n", id, newName.c_str());
         }
       }
     }
@@ -566,8 +776,17 @@ void setupWebServer() {
         if (newWatt > 0.0) {
           lightWatts[id] = newWatt;
           preferences.putFloat(("watt" + String(id)).c_str(), newWatt);
-          Serial.printf("Settings saved: watt%d=%.2f\n", id, newWatt);
+          logMsg("Settings saved: watt%d=%.2f\n", id, newWatt);
         }
+      }
+    }
+    
+    if (doc.containsKey("tempCal")) {
+      float newCal = doc["tempCal"] | 0.0;
+      if (newCal >= -100.0 && newCal <= 100.0) {
+        tempCalibration = newCal;
+        preferences.putFloat("tempCal", newCal);
+        logMsg("Settings saved: tempCal=%.1f\n", newCal);
       }
     }
     preferences.end();
@@ -598,7 +817,7 @@ void setupWebServer() {
     
     HTTPUpload& upload = server.upload();
     if (upload.status == UPLOAD_FILE_START) {
-      Serial.printf("Update: %s\n", upload.filename.c_str());
+      logMsg("OTA upload started: %s\n", upload.filename.c_str());
       if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
         Update.printError(Serial);
       }
@@ -610,13 +829,13 @@ void setupWebServer() {
         int progress = (Update.progress() * 100) / Update.size();
         static int lastProgress = -1;
         if (progress != lastProgress) {
-          Serial.printf("OTA progress: %d%%\n", progress);
+          logMsg("OTA progress: %d%%\n", progress);
           lastProgress = progress;
         }
       }
     } else if (upload.status == UPLOAD_FILE_END) {
       if (Update.end(true)) {
-        Serial.printf("Update Success: %u bytes\nRebooting...\n", upload.totalSize);
+        logMsg("OTA update success: %u bytes. Rebooting...\n", upload.totalSize);
       } else {
         Update.printError(Serial);
       }
@@ -671,7 +890,7 @@ void setup() {
   delay(100);
   
   // Pin setup
-  Serial.println("Relay module init — click on boot is normal");
+  logMsg("System booting — House Lighting System v1.0\n");
   for (int i = 1; i <= 4; i++) {
     pinMode(RELAY_PINS[i], OUTPUT);
     digitalWrite(RELAY_PINS[i], HIGH);  // HIGH = relay OFF = light OFF
@@ -682,12 +901,24 @@ void setup() {
   // Load configuration
   loadSettingsFromNVS();
   
-  // Restore relay outputs immediately
+  // Restore relay outputs:
+  // - Scheduled lights: Hold relay OFF until WiFi and time sync to avoid daylight instant-on.
+  // - Non-scheduled (manual) lights: Restore previous state immediately from NVS.
   for (int i = 1; i <= 4; i++) {
-    digitalWrite(RELAY_PINS[i], lightStates[i] ? LOW : HIGH);
-    Serial.printf("Restoring Light %d to %s\n", i, lightStates[i] ? "ON" : "OFF");
+    if (hasActiveSchedule(i)) {
+      digitalWrite(RELAY_PINS[i], HIGH); // Relay OFF (Light OFF)
+      lightStates[i] = false;            // Held OFF pending NTP schedule reconciliation
+      logMsg("Light %d [%s] is scheduled — holding OFF until time sync\n", i, lightNames[i].c_str());
+    } else {
+      digitalWrite(RELAY_PINS[i], lightStates[i] ? LOW : HIGH);
+      logMsg("Restoring manual Light %d [%s] to %s\n", i, lightNames[i].c_str(), lightStates[i] ? "ON" : "OFF");
+    }
   }
   
+  // NTC ADC setup
+  analogReadResolution(12);
+  analogSetPinAttenuation(NTC_PIN, ADC_11db);
+
   // WiFi connection (non-blocking for 8s)
   setupWiFi();
   
@@ -698,7 +929,7 @@ void setup() {
   setupWebServer();
   server.begin();
   
-  Serial.println("Setup finished. System active.");
+  logMsg("Setup finished. System active.\n");
 }
 
 // ── Loop ───────────────────
@@ -720,11 +951,12 @@ void loop() {
   if (!graceEnded) {
     if (elapsed >= (unsigned long)BOOT_GRACE_SEC) {
       graceEnded = true;
-      Serial.println("Boot grace ended — schedules active");
+      logMsg("Boot grace ended — schedules active\n");
+      reconcileSchedules();
     } else {
       if (millis() - lastGracePrintTime >= 30000) {
         lastGracePrintTime = millis();
-        Serial.printf("Boot grace: %ds remaining\n", (int)(BOOT_GRACE_SEC - elapsed));
+        logMsg("Boot grace: %ds remaining\n", (int)(BOOT_GRACE_SEC - elapsed));
       }
     }
   }

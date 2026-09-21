@@ -18,6 +18,18 @@
       --red: #ef4444;
       --transition: 0.35s ease;
     }
+    [data-theme="light"] {
+      --bg: #f1f5f9;
+      --card-bg: #ffffff;
+      --border: #cbd5e1;
+      --amber: #d97706;
+      --amber-dim: #fde68a;
+      --green: #16a34a;
+      --text: #0f172a;
+      --text-muted: #475569;
+      --text-dim: #94a3b8;
+      --red: #dc2626;
+    }
     * {
       box-sizing: border-box;
       margin: 0;
@@ -799,6 +811,7 @@
     </div>
     <div class="header-right">
       <div class="status-dot" id="status-dot"></div>
+      <div class="current-time" id="header-temp" style="font-size:0.85rem;font-weight:500;font-family:monospace;color:var(--text-muted);">--°C</div>
       <div class="current-time" id="current-time">00:00</div>
     </div>
   </header>
@@ -830,6 +843,10 @@
     <!-- ── TAB 2: POWER ── -->
     <div id="tab-power" class="tab-content">
       <div class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">Temperature</div>
+          <div class="metric-value"><span id="power-temp">--</span><span class="metric-unit">°C</span></div>
+        </div>
         <div class="metric-card">
           <div class="metric-label">Live Load</div>
           <div class="metric-value"><span id="power-live">0</span><span class="metric-unit">W</span></div>
@@ -927,7 +944,13 @@
           </div>
         </div>
 
-        <button class="btn btn-primary" id="btn-flash" style="width: 100%; display: none;" onclick="startHttpOta()">
+        <div class="form-group" id="ota-password-group" style="display: none; margin-bottom: 20px;">
+          <label class="form-label" for="ota-password">Enter OTA Password</label>
+          <input type="password" class="input-field" id="ota-password" placeholder="Enter password to enable flash" style="font-family: monospace; letter-spacing: 2px;">
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Enter the OTA password to unlock the firmware update</div>
+        </div>
+
+        <button class="btn btn-primary" id="btn-flash" style="width: 100%; display: none;" onclick="startHttpOta()" disabled>
           Flash Firmware
         </button>
 
@@ -959,6 +982,41 @@
         <div id="settings-watts-fields">
           <!-- JS generates fields -->
         </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Temperature Calibration</div>
+        <div class="form-group">
+          <label class="form-label" for="setting-tempcal">Calibration Offset (°C)</label>
+          <input type="number" class="input-field" id="setting-tempcal" value="0" min="-100" max="100" step="0.5">
+          <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+            Adjust if the dashboard temperature differs from actual room temperature. Range: -100 to +100 °C
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Display Theme</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-weight:500;margin-bottom:2px;">Dark / Light Mode</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);">Changes the dashboard color scheme</div>
+          </div>
+          <label class="switch" style="pointer-events:auto;cursor:pointer;">
+            <input type="checkbox" id="theme-toggle" onchange="toggleTheme()" style="display:none;">
+            <span class="switch-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>System Logs</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn" style="padding:6px 12px;font-size:0.75rem;" onclick="clearLogs()">Clear</button>
+          </div>
+        </div>
+        <pre id="log-viewer" style="background:#000;border:1px solid var(--border);border-radius:6px;padding:12px;font-family:monospace;font-size:0.75rem;color:#22c55e;line-height:1.5;max-height:300px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;margin:0;">Connecting...</pre>
       </div>
 
       <button class="btn btn-primary" style="width: 100%; padding: 14px;" onclick="saveSettingsToServer()">
@@ -1092,6 +1150,13 @@
       
       const btnEl = document.getElementById(`btn-tab-${tabId}`);
       if (btnEl) btnEl.classList.add('active');
+
+      // Log auto-refresh
+      if (logAutoRefresh) { clearInterval(logAutoRefresh); logAutoRefresh = null; }
+      if (tabId === 'settings') {
+        fetchLogs();
+        logAutoRefresh = setInterval(fetchLogs, 3000);
+      }
     }
 
     // Settings Doc Tab switcher
@@ -1112,6 +1177,74 @@
       setTimeout(() => {
         toast.classList.remove('show');
       }, 3000);
+    }
+
+    // Format 24h time to 12h with AM/PM
+    function formatTime12h(time24) {
+      const [h, m] = time24.split(':').map(Number);
+      const period = h >= 12 ? 'PM' : 'AM';
+      const h12 = h % 12 || 12;
+      return `${h12}:${m < 10 ? '0' : ''}${m} ${period}`;
+    }
+
+    // Get time until next schedule event for a light
+    function getNextScheduleText(lightId) {
+      const rules = schedules[`sched${lightId}`] || [];
+      if (rules.length === 0) return '';
+
+      const [h, m] = systemState.time.split(':').map(Number);
+      const now = h * 60 + m;
+      const isOn = systemState.lights[lightId].state;
+
+      const transitions = [];
+
+      rules.forEach(rule => {
+        if (!rule.enabled) return;
+
+        const [onH, onM] = rule.on_time.split(':').map(Number);
+        const [offH, offM] = rule.off_time.split(':').map(Number);
+        const on = onH * 60 + onM;
+        const off = offH * 60 + offM;
+        const crossover = off <= on;
+
+        if (!crossover) {
+          if (isOn) {
+            if (now < off) transitions.push({ time: off, day: 0, label: 'OFF' });
+          } else {
+            if (now < on) transitions.push({ time: on, day: 0, label: 'ON' });
+            else transitions.push({ time: on, day: 1, label: 'ON' });
+          }
+        } else {
+          const inWindow = (now >= on || now < off);
+          if (isOn && inWindow) {
+            if (now >= on) transitions.push({ time: off, day: 1, label: 'OFF' });
+            else transitions.push({ time: off, day: 0, label: 'OFF' });
+          } else if (!isOn && !inWindow) {
+            if (now < on) transitions.push({ time: on, day: 0, label: 'ON' });
+            else transitions.push({ time: on, day: 1, label: 'ON' });
+          }
+        }
+      });
+
+      if (transitions.length === 0) return '';
+
+      let best = null;
+      let bestDelta = null;
+      transitions.forEach(t => {
+        const delta = (t.time + t.day * 1440) - now;
+        if (delta > 0 && (bestDelta === null || delta < bestDelta)) {
+          bestDelta = delta;
+          best = t;
+        }
+      });
+
+      if (best === null || bestDelta > 1440) return '';
+      if (bestDelta >= 60) {
+        const hh = Math.floor(bestDelta / 60);
+        const mm = bestDelta % 60;
+        return `${best.label} in ${hh}h ${mm}m`;
+      }
+      return `${best.label} in ${bestDelta}m`;
     }
 
     // Format Uptime
@@ -1160,7 +1293,7 @@
     // Update the UI elements from systemState
     function updateUI() {
       // Time and Dot
-      document.getElementById('current-time').innerText = systemState.time;
+      document.getElementById('current-time').innerText = formatTime12h(systemState.time);
       document.getElementById('status-dot').className = 'status-dot online';
       
       // Grace period banner
@@ -1222,9 +1355,12 @@
       const grid = document.getElementById('lights-grid');
       let gridHTML = "";
       Object.entries(systemState.lights).forEach(([id, l]) => {
-        // Find if this light has a schedule
+        // Schedule countdown for this light
         let schedText = "No schedule";
-        if (schedules[`sched${id}`] && schedules[`sched${id}`].length > 0) {
+        const nextEvent = getNextScheduleText(id);
+        if (nextEvent) {
+          schedText = nextEvent;
+        } else if (schedules[`sched${id}`] && schedules[`sched${id}`].length > 0) {
           const activeRule = schedules[`sched${id}`].find(r => r.enabled);
           if (activeRule) {
             schedText = `${activeRule.on_time} → ${activeRule.off_time}`;
@@ -1341,6 +1477,14 @@
             systemState.chart = data.chart;
           }
           
+          // Temperature
+          if (data.temperature !== undefined) {
+            const temp = parseFloat(data.temperature);
+            const tempStr = isNaN(temp) ? '--' : temp.toFixed(1);
+            document.getElementById('power-temp').innerText = tempStr;
+            document.getElementById('header-temp').innerHTML = tempStr + '<span style="font-size:0.7rem;">°C</span>';
+          }
+
           // Header IP
           document.getElementById('device-info').innerText = `ESP32-S2 | IP: ${window.location.hostname || '192.168.1.15'}`;
           
@@ -1549,6 +1693,38 @@
 
       namesContainer.innerHTML = namesHTML;
       wattsContainer.innerHTML = wattsHTML;
+
+      // Temperature calibration
+      const tempCal = settings.tempCal || 0;
+      document.getElementById('setting-tempcal').value = tempCal;
+    }
+
+    // Log viewer
+    let logAutoRefresh = null;
+
+    function fetchLogs() {
+      fetch('/logs')
+        .then(res => res.json())
+        .then(data => {
+          const viewer = document.getElementById('log-viewer');
+          if (data && Array.isArray(data)) {
+            viewer.innerText = data.join('');
+            viewer.scrollTop = viewer.scrollHeight;
+          }
+        })
+        .catch(() => {});
+    }
+
+    function clearLogs() {
+      fetch('/logs', { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+          if (data.ok) {
+            document.getElementById('log-viewer').innerText = 'Logs cleared.';
+            fetchLogs();
+          }
+        })
+        .catch(() => {});
     }
 
     function saveSettingsToServer() {
@@ -1561,10 +1737,12 @@
         newWatts.push(parseFloat(document.getElementById(`setting-watt-${id}`).value) || 25);
       }
 
+      const tempCal = parseFloat(document.getElementById('setting-tempcal').value) || 0;
+
       fetch('/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ names: newNames, watts: newWatts })
+        body: JSON.stringify({ names: newNames, watts: newWatts, tempCal: tempCal })
       })
       .then(res => res.json())
       .then(data => {
@@ -1587,6 +1765,7 @@
     const progressContainer = document.getElementById('ota-progress-container');
     const progressBar = document.getElementById('ota-progress-bar');
     let selectedFile = null;
+    let passwordVerified = false;
 
     dropZone.addEventListener('click', () => fileInput.click());
     
@@ -1612,16 +1791,35 @@
     function handleFileSelected(file) {
       if (file && file.name.endsWith('.bin')) {
         selectedFile = file;
+        passwordVerified = false;
         document.getElementById('drop-zone-text').innerHTML = `Selected: <span style="color:var(--amber);font-family:monospace">${file.name}</span> (${(file.size/1024/1024).toFixed(2)} MB)`;
+        document.getElementById('ota-password-group').style.display = 'block';
+        document.getElementById('ota-password').value = '';
         flashBtn.style.display = 'block';
-        statusText.innerText = "Ready to flash.";
+        flashBtn.disabled = true;
+        flashBtn.style.opacity = '0.5';
+        statusText.innerText = "Enter the OTA password to enable flashing.";
       } else {
         showToast("Invalid file. Please select a .bin file.", "error");
       }
     }
 
+    document.getElementById('ota-password').addEventListener('input', function() {
+      if (this.value === 'F4D47898') {
+        passwordVerified = true;
+        flashBtn.disabled = false;
+        flashBtn.style.opacity = '1';
+        statusText.innerText = "Password correct. Ready to flash.";
+      } else {
+        passwordVerified = false;
+        flashBtn.disabled = true;
+        flashBtn.style.opacity = '0.5';
+        statusText.innerText = this.value.length > 0 ? "Incorrect password" : "Enter the OTA password to enable flashing.";
+      }
+    });
+
     function startHttpOta() {
-      if (!selectedFile) return;
+      if (!selectedFile || !passwordVerified) return;
 
       const formData = new FormData();
       formData.append("update", selectedFile);
@@ -1681,7 +1879,22 @@
         .catch(() => {});
     }
 
+    // Theme management
+    function toggleTheme() {
+      const isLight = document.getElementById('theme-toggle').checked;
+      document.documentElement.setAttribute('data-theme', isLight ? 'light' : '');
+      localStorage.setItem('theme', isLight ? 'light' : 'dark');
+    }
+
+    function loadTheme() {
+      const saved = localStorage.getItem('theme');
+      const isLight = saved === 'light';
+      document.getElementById('theme-toggle').checked = isLight;
+      document.documentElement.setAttribute('data-theme', isLight ? 'light' : '');
+    }
+
     // Initial setup
+    loadTheme();
     refreshStatus();
     loadSchedules();
     loadSettings();
